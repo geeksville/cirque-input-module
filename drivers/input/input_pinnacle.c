@@ -421,6 +421,51 @@ int pinnacle_set_sleep(const struct device *dev, bool enabled) {
     return ret;
 }
 
+
+int pinnacle_set_shutdown(const struct device *dev, bool enabled) {
+    uint8_t sys_cfg;
+    int ret = pinnacle_seq_read(dev, PINNACLE_SYS_CFG, &sys_cfg, 1);
+    if (ret < 0) {
+        LOG_ERR("can't read sys config %d", ret);
+        return ret;
+    }
+
+    if (((sys_cfg & PINNACLE_SYS_CFG_SHUTDOWN) != 0) == enabled) {
+        LOG_WRN("Shutdown already set to %s", (enabled ? "on" : "off"));
+    }
+
+    LOG_DBG("Setting shutdown: %s", (enabled ? "on" : "off"));
+
+    if(enabled) {
+        // interrupt pin might have bogus asserts in shtdown so disable ints here
+        // FIXME if this is in things are fucked later
+        set_int(dev, false);
+        }
+
+    WRITE_BIT(sys_cfg, PINNACLE_SYS_CFG_SHUTDOWN_BIT, enabled ? 1 : 0);
+
+    ret = pinnacle_write(dev, PINNACLE_SYS_CFG, sys_cfg);
+    if (ret < 0) {
+        LOG_ERR("can't write shutdown config %d", ret);
+        return ret;
+    }
+
+    if (!enabled) {
+        // pinnacle_clear_status(dev); // clear any spurious ints on wake
+        ret = set_int(dev, true);
+    }
+    else {
+        ret = pinnacle_seq_read(dev, PINNACLE_SYS_CFG, &sys_cfg, 1);
+        if (ret < 0) {
+            LOG_ERR("can't read sys config %d", ret);
+            return ret;
+        }
+        LOG_DBG("Shutdown readback: %s", (sys_cfg & PINNACLE_SYS_CFG_SHUTDOWN) ? "on" : "off");
+    }
+
+    return ret;
+}
+
 static int pinnacle_init(const struct device *dev) {
     struct pinnacle_data *data = dev->data;
     const struct pinnacle_config *config = dev->config;
@@ -549,9 +594,11 @@ static int pinnacle_init(const struct device *dev) {
 static int pinnacle_pm_action(const struct device *dev, enum pm_device_action action) {
     switch (action) {
     case PM_DEVICE_ACTION_SUSPEND:
-        return set_int(dev, false);
+        pinnacle_set_shutdown(dev, true);
+        return 0;
     case PM_DEVICE_ACTION_RESUME:
-        return set_int(dev, true);
+        pinnacle_set_shutdown(dev, false);
+        return 0;
     default:
         return -ENOTSUP;
     }
