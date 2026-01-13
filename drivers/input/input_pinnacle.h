@@ -19,6 +19,7 @@
 #define PINNACLE_SYS_CFG 0x03 // Contains system operation and configuration bits.
 #define PINNACLE_SYS_CFG_EN_SLEEP_BIT 2
 #define PINNACLE_SYS_CFG_EN_SLEEP BIT(2)
+#define PINNACLE_SYS_CFG_SHUTDOWN_BIT 1
 #define PINNACLE_SYS_CFG_SHUTDOWN BIT(1)
 #define PINNACLE_SYS_CFG_RESET BIT(0)
 
