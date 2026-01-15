@@ -10,6 +10,11 @@ properties:
     type: boolean
   sleep:
     type: boolean
+    description: Enables an aggressive touch sleep mode, after 5 seconds of no-touch 300ms of touch will cause wake
+  touch-periods:
+    type: int
+    default: 3
+    description: Number of checks for no movement before we declare lack of touch (saves power and enables touch detection) (0 to disable)
   no-secondary-tap:
     type: boolean
   no-taps:

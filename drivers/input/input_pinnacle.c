@@ -289,20 +289,21 @@ static void pinnacle_report_data(const struct device *dev) {
 
     int32_t is_touching = 1;
 
-    if (dx == 0 && dy == 0) {
+    uint8_t touch_periods = config->touch_periods;
+    if (dx == 0 && dy == 0 && config->touch_periods) {
         // per the datasheet in relative mode 0,0 movement means 'no touch detected'.  We recieve a message every 10ms, so if we recieve
-        // 3 consecutive perfect 0,0 messages we can be pretty sure the user has lifted their finger.
+        // 3 consecutive perfect 0,0 messages we can be pretty sure the user has lifted their finger.  Use that as the default touch_periods.
         data->zero_count++;
-        if (data->zero_count >= 3) { // FIXME, let user customize this threshold via the device tree?
+        if (data->zero_count >= touch_periods) { 
             is_touching = 0;
-            if (data->zero_count == 3) {
+            if (data->zero_count == touch_periods) {
                 LOG_DBG("Touch release detected");
                 must_send = true;
             }
-            data->zero_count = 4; // prevent overflow
+            data->zero_count = touch_periods + 1; // prevent overflow
         }
 
-        // FIXME - If this turns out to be insufficient in real world,
+        // Note: If this turns out to be insufficient in real world,
         // usage we'll need to change the device into absolute mode (and do our own tap detection?).  In that mode touch info is included in
         // the packet as z height
     }
@@ -632,6 +633,7 @@ static int pinnacle_pm_action(const struct device *dev, enum pm_device_action ac
         .x_invert = DT_INST_PROP(n, x_invert),                                                     \
         .y_invert = DT_INST_PROP(n, y_invert),                                                     \
         .sleep_en = DT_INST_PROP(n, sleep),                                                        \
+        .touch_periods = DT_INST_PROP_OR(n, touch_periods, 3),                                     \
         .no_taps = DT_INST_PROP(n, no_taps),                                                       \
         .no_secondary_tap = DT_INST_PROP(n, no_secondary_tap),                                     \
         .x_axis_z_min = DT_INST_PROP_OR(n, x_axis_z_min, 5),                                       \
