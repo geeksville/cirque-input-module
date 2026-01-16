@@ -290,22 +290,26 @@ static void pinnacle_report_data(const struct device *dev) {
     int32_t is_touching = 1;
 
     uint8_t touch_periods = config->touch_periods;
-    if (dx == 0 && dy == 0 && config->touch_periods) {
-        // per the datasheet in relative mode 0,0 movement means 'no touch detected'.  We recieve a message every 10ms, so if we recieve
-        // 3 consecutive perfect 0,0 messages we can be pretty sure the user has lifted their finger.  Use that as the default touch_periods.
-        data->zero_count++;
-        if (data->zero_count >= touch_periods) { 
-            is_touching = 0;
-            if (data->zero_count == touch_periods) {
-                LOG_DBG("Touch release detected");
-                must_send = true;
-            }
-            data->zero_count = touch_periods + 1; // prevent overflow
-        }
+    if (dx == 0 && dy == 0) {
+        // Note: we never send null movement events, because they are common and power consuming to wake-up and process
+    
+        if(config->touch_periods) {
+            // per the datasheet in relative mode 0,0 movement means 'no touch detected'.  We recieve a message every 10ms, so if we recieve
+            // 3 consecutive perfect 0,0 messages we can be pretty sure the user has lifted their finger.  Use that as the default touch_periods.
 
-        // Note: If this turns out to be insufficient in real world,
-        // usage we'll need to change the device into absolute mode (and do our own tap detection?).  In that mode touch info is included in
-        // the packet as z height
+            // Note: If this turns out to be insufficient in real world,
+            // usage we'll need to change the device into absolute mode (and do our own tap detection?).  In that mode touch info is included in
+            // the packet as z height
+            data->zero_count++;
+            if (data->zero_count >= touch_periods) { 
+                is_touching = 0;
+                if (data->zero_count == touch_periods) {
+                    LOG_DBG("Touch release detected");
+                    must_send = true;
+                }
+                data->zero_count = touch_periods + 1; // prevent overflow
+            }
+        }
     }
     else {
         data->zero_count = 0; // Had some movement
