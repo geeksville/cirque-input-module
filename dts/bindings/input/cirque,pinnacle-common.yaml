@@ -30,6 +30,10 @@ properties:
     default: 4
   absolute-mode:
     type: boolean
+  abs-rel-divisor:
+    type: int
+    description: If non zero, uses pad in absmode, but sends relative events (and touch press/release)
+    default: 0
   absolute-mode-scale-to-width:
     type: int
     default: 1024
