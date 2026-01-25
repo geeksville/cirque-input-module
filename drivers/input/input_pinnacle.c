@@ -21,7 +21,11 @@ static int pinnacle_write(const struct device *dev, const uint8_t addr, const ui
     return config->write(dev, addr, val);
 }
 
-#define NUM_ZIDLE  0x05
+// Now that we are counting ZIDLEs it would be very bad to miss one.  But in my testing I see that happen (rarely - once every
+// couple of days of usage).  The fact that the current irq system is edge triggered probably isn't great for this reason.
+// But for now just have the touch controller emit NUM_ZIDLE_PAD extra idles
+#define NUM_ZIDLE  3
+#define NUM_ZIDLE_PAD 2
 
 #if DT_ANY_INST_ON_BUS_STATUS_OKAY(i2c)
 
@@ -597,7 +601,7 @@ static int pinnacle_init(const struct device *dev) {
         return ret;
     }
     k_msleep(20);
-    ret = pinnacle_write(dev, PINNACLE_Z_IDLE, NUM_ZIDLE); 
+    ret = pinnacle_write(dev, PINNACLE_Z_IDLE, NUM_ZIDLE + NUM_ZIDLE_PAD);
     if (ret < 0) {
         LOG_ERR("can't write %d", ret);
         return ret;
