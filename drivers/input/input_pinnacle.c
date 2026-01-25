@@ -21,6 +21,8 @@ static int pinnacle_write(const struct device *dev, const uint8_t addr, const ui
     return config->write(dev, addr, val);
 }
 
+#define NUM_ZIDLE  0x05
+
 #if DT_ANY_INST_ON_BUS_STATUS_OKAY(i2c)
 
 static int pinnacle_i2c_seq_read(const struct device *dev, const uint8_t addr, uint8_t *buf,
@@ -229,8 +231,164 @@ static int pinnacle_era_write(const struct device *dev, const uint16_t addr, uin
     return ret;
 }
 
-static void pinnacle_report_data(const struct device *dev) {
+static void pinnacle_send_rel(const struct device *dev, int8_t dx, int8_t dy) {
     const struct pinnacle_config *config = dev->config;
+    struct pinnacle_data *data = dev->data;
+
+    pinnacle_clear_status(dev);
+
+    bool must_send = false;
+
+    uint8_t btn = data->last_btn;
+    if (!config->no_taps && (btn || data->btn_cache)) {
+        for (int i = 0; i < 3; i++) {
+            uint8_t btn_val = btn & BIT(i);
+            if (btn_val != (data->btn_cache & BIT(i))) {
+                input_report_key(dev, INPUT_BTN_0 + i, btn_val ? 1 : 0, false, K_FOREVER);
+                must_send = true;
+            }
+        }
+    }
+
+    data->btn_cache = btn;
+    bool is_touching = (data->last_z > 0);
+    bool touch_changed = false;
+    if(is_touching) {
+        must_send = true;
+
+        if(data->num_z_idle > 0) { // we just recently had z idles
+            touch_changed = true;
+            data->num_z_idle = 0;
+            dx = 0;
+            dy = 0; // starting a new press, must reset deltas
+        }
+    } else {
+        data->num_z_idle++;
+        if(data->num_z_idle == NUM_ZIDLE) {
+            touch_changed = true;
+        }
+        dx = 0;
+        dy = 0;
+    }
+
+    LOG_DBG("Rel move: touch_changed=%d z=%d dx=%d dy=%d", touch_changed, data->last_z, dx, dy);
+
+    if(touch_changed)
+    {
+        // Finalize the input event only if we have something to report
+        input_report_key(dev, INPUT_BTN_TOUCH, is_touching ? 1 : 0, false, K_FOREVER);
+        must_send = true;
+    }
+
+    if(must_send) {
+        input_report_rel(dev, INPUT_REL_X, dx, false, K_FOREVER);
+        input_report_rel(dev, INPUT_REL_Y, dy, true, K_FOREVER); 
+    }
+}
+
+static void pinnacle_send_abs(const struct device *dev) {
+    const struct pinnacle_config *config = dev->config;
+    struct pinnacle_data *data = dev->data;
+    int16_t x = data->last_x;
+    int16_t y = data->last_y;
+    int8_t z = data->last_z;
+
+    LOG_DBG("Clearing status bit");
+    pinnacle_clear_status(dev);
+
+    uint8_t btn = data->last_btn;
+    if (!config->no_taps && (btn || data->btn_cache)) {
+        for (int i = 0; i < 3; i++) {
+            uint8_t btn_val = btn & BIT(i);
+            if (btn_val != (data->btn_cache & BIT(i))) {
+                input_report_key(dev, INPUT_BTN_0 + i, btn_val ? 1 : 0, false, K_FOREVER);
+            }
+        }
+    }
+
+    data->btn_cache = btn;
+
+    if (z > 0) {
+        if (x < config->absolute_mode_clamp_min_x) {
+            x = config->absolute_mode_clamp_min_x;
+        } else if (x > config->absolute_mode_clamp_max_x) {
+            x = config->absolute_mode_clamp_max_x;
+        }
+        if (y < config->absolute_mode_clamp_min_y) {
+            y = config->absolute_mode_clamp_min_y;
+        } else if (y > config->absolute_mode_clamp_max_y) {
+            y = config->absolute_mode_clamp_max_y;
+        }
+
+        // scale to be in the configured interval
+        x = ((x - config->absolute_mode_clamp_min_x) * config->absolute_mode_scale_to_width) / (config->absolute_mode_clamp_max_x - config->absolute_mode_clamp_min_x);
+        y = ((y - config->absolute_mode_clamp_min_y) * config->absolute_mode_scale_to_height) / (config->absolute_mode_clamp_max_y - config->absolute_mode_clamp_min_y);
+
+        input_report_abs(dev, INPUT_ABS_X, x, false, K_FOREVER);
+        input_report_abs(dev, INPUT_ABS_Y, y, true, K_FOREVER);
+    }
+
+    return;
+}
+
+static int pinnacle_read_abs(const struct device *dev) {
+    uint8_t packet[6];
+    int ret;
+    ret = pinnacle_seq_read(dev, PINNACLE_STATUS1, packet, 1);
+    if (ret < 0) {
+        LOG_ERR("read status: %d", ret);
+        return ret;
+    }
+    if (!(packet[0] & PINNACLE_STATUS1_SW_DR)) {
+        return -1;
+    }
+    ret = pinnacle_seq_read(dev, PINNACLE_2_2_PACKET0, packet, 6);
+    if (ret < 0) {
+        LOG_ERR("read packet: %d", ret);
+        return ret;
+    }
+    struct pinnacle_data *data = dev->data;
+    // TODO: Enable SW3-SW5 as well
+    data->last_btn = packet[0] &
+                  (PINNACLE_PACKET0_BTN_PRIM | PINNACLE_PACKET0_BTN_SEC | PINNACLE_PACKET0_BTN_AUX);
+    uint8_t x_low = packet[2];
+    uint8_t y_low = packet[3];
+    uint8_t xy_high = packet[4];
+    data->last_x = ((xy_high & 0x0F) << 8) | x_low;
+    data->last_y = ((xy_high & 0xF0) << 4) | y_low;
+    data->last_z = (uint8_t)(packet[5] & 0x1F);
+
+    LOG_DBG("button: %d, x: %d y: %d z: %d", data->last_btn, data->last_x, data->last_y, data->last_z);
+    return 0;
+}
+
+static void pinnacle_report_data_abs(const struct device *dev) {
+    int ret = pinnacle_read_abs(dev);
+    if (ret == 0) {
+        pinnacle_send_abs(dev);
+    }
+}
+
+static void pinnacle_report_data_abs_rel(const struct device *dev) {
+    struct pinnacle_data *data = dev->data;
+    int16_t old_x = data->last_x;
+    int16_t old_y = data->last_y;
+
+    int ret = pinnacle_read_abs(dev);
+
+    if (ret == 0) {
+        int16_t dx = data->last_x - old_x;
+        int16_t dy = data->last_y - old_y;
+        const struct pinnacle_config *config = dev->config;
+
+        dx /= config->abs_rel_divisor;
+        dy /= config->abs_rel_divisor;
+
+        pinnacle_send_rel(dev, (int8_t) dx, (int8_t) dy);
+    }
+}
+
+static void pinnacle_report_data_rel(const struct device *dev) {
     uint8_t packet[3];
     int ret;
     ret = pinnacle_seq_read(dev, PINNACLE_STATUS1, packet, 1);
@@ -254,7 +412,7 @@ static void pinnacle_report_data(const struct device *dev) {
     LOG_HEXDUMP_DBG(packet, 3, "Pinnacle Packets");
 
     struct pinnacle_data *data = dev->data;
-    uint8_t btn = packet[0] &
+    data->last_btn = packet[0] &
                   (PINNACLE_PACKET0_BTN_PRIM | PINNACLE_PACKET0_BTN_SEC | PINNACLE_PACKET0_BTN_AUX);
 
     int8_t dx = (int8_t)packet[1];
@@ -267,32 +425,23 @@ static void pinnacle_report_data(const struct device *dev) {
         WRITE_BIT(dy, 7, 1);
     }
 
-    if (data->in_int) {
-        LOG_DBG("Clearing status bit");
-        ret = pinnacle_clear_status(dev);
-        data->in_int = true;
-    }
-
-    if (!config->no_taps && (btn || data->btn_cache)) {
-        for (int i = 0; i < 3; i++) {
-            uint8_t btn_val = btn & BIT(i);
-            if (btn_val != (data->btn_cache & BIT(i))) {
-                input_report_key(dev, INPUT_BTN_0 + i, btn_val ? 1 : 0, false, K_FOREVER);
-            }
-        }
-    }
-
-    data->btn_cache = btn;
-
-    input_report_rel(dev, INPUT_REL_X, dx, false, K_FOREVER);
-    input_report_rel(dev, INPUT_REL_Y, dy, true, K_FOREVER);
-
-    return;
+    // always claim touch changed
+    data->last_z = 1;
+    pinnacle_send_rel(dev, (int8_t) dx, (int8_t) dy);
 }
 
 static void pinnacle_work_cb(struct k_work *work) {
     struct pinnacle_data *data = CONTAINER_OF(work, struct pinnacle_data, work);
-    pinnacle_report_data(data->dev);
+    const struct device *dev = data->dev;
+    const struct pinnacle_config *config = dev->config;
+
+    if (config->absolute_mode) {
+        pinnacle_report_data_abs(dev);
+    } else if (config->abs_rel_divisor) {
+        pinnacle_report_data_abs_rel(dev);
+    } else {
+        pinnacle_report_data_rel(dev);
+    }
 }
 
 static void pinnacle_gpio_cb(const struct device *port, struct gpio_callback *cb, uint32_t pins) {
@@ -493,7 +642,7 @@ static int pinnacle_init(const struct device *dev) {
         return ret;
     }
     k_msleep(20);
-    ret = pinnacle_write(dev, PINNACLE_Z_IDLE, 0x05); // No Z-Idle packets
+    ret = pinnacle_write(dev, PINNACLE_Z_IDLE, NUM_ZIDLE); 
     if (ret < 0) {
         LOG_ERR("can't write %d", ret);
         return ret;
@@ -525,7 +674,7 @@ static int pinnacle_init(const struct device *dev) {
 
     uint8_t packet[1];
     ret = pinnacle_seq_read(dev, PINNACLE_SLEEP_INTERVAL, packet, 1);
-
+ 
     if (ret >= 0) {
         LOG_DBG("Default sleep interval %d", packet[0]);
     }
@@ -553,6 +702,12 @@ static int pinnacle_init(const struct device *dev) {
         return ret;
     }
     uint8_t feed_cfg1 = PINNACLE_FEED_CFG1_EN_FEED;
+    if (config->absolute_mode || config->abs_rel_divisor) {
+        feed_cfg1 |= PINNACLE_FEED_CFG1_ABS_MODE;
+        LOG_ERR("Using absolute mode");
+    } else {
+        LOG_ERR("Using relative mode");
+    }
     if (config->x_invert) {
         feed_cfg1 |= PINNACLE_FEED_CFG1_INV_X;
     }
@@ -623,6 +778,14 @@ static int pinnacle_pm_action(const struct device *dev, enum pm_device_action ac
         .sleep_en = DT_INST_PROP(n, sleep),                                                        \
         .no_taps = DT_INST_PROP(n, no_taps),                                                       \
         .no_secondary_tap = DT_INST_PROP(n, no_secondary_tap),                                     \
+        .absolute_mode = DT_INST_PROP(n, absolute_mode),                                           \
+        .abs_rel_divisor = DT_INST_PROP(n, abs_rel_divisor),                                       \
+        .absolute_mode_scale_to_width = DT_INST_PROP(n, absolute_mode_scale_to_width),             \
+        .absolute_mode_scale_to_height = DT_INST_PROP(n, absolute_mode_scale_to_height),           \
+        .absolute_mode_clamp_min_x = DT_INST_PROP(n, absolute_mode_clamp_min_x),                   \
+        .absolute_mode_clamp_max_x = DT_INST_PROP(n, absolute_mode_clamp_max_x),                   \
+        .absolute_mode_clamp_min_y = DT_INST_PROP(n, absolute_mode_clamp_min_y),                   \
+        .absolute_mode_clamp_max_y = DT_INST_PROP(n, absolute_mode_clamp_max_y),                   \
         .x_axis_z_min = DT_INST_PROP_OR(n, x_axis_z_min, 5),                                       \
         .y_axis_z_min = DT_INST_PROP_OR(n, y_axis_z_min, 4),                                       \
         .sensitivity = DT_INST_ENUM_IDX_OR(n, sensitivity, PINNACLE_SENSITIVITY_1X),               \
