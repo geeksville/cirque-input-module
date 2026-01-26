@@ -123,7 +123,7 @@ static int pinnacle_spi_write(const struct device *dev, const uint8_t addr, cons
 static int set_int(const struct device *dev, const bool en) {
     const struct pinnacle_config *config = dev->config;
     int ret = gpio_pin_interrupt_configure_dt(&config->dr,
-                                              en ? GPIO_INT_EDGE_TO_ACTIVE : GPIO_INT_DISABLE);
+                                              en ? GPIO_INT_LEVEL_ACTIVE : GPIO_INT_DISABLE);
     if (ret < 0) {
         LOG_ERR("can't set interrupt");
     }
@@ -240,6 +240,7 @@ static void pinnacle_send_rel(const struct device *dev, int8_t dx, int8_t dy) {
     struct pinnacle_data *data = dev->data;
 
     pinnacle_clear_status(dev);
+    set_int(dev, true);
 
     bool must_send = false;
 
@@ -299,6 +300,7 @@ static void pinnacle_send_abs(const struct device *dev) {
 
     LOG_DBG("Clearing status bit");
     pinnacle_clear_status(dev);
+    set_int(dev, true);
 
     uint8_t btn = data->last_btn;
     if (!config->no_taps && (btn || data->btn_cache)) {
@@ -452,7 +454,7 @@ static void pinnacle_gpio_cb(const struct device *port, struct gpio_callback *cb
     struct pinnacle_data *data = CONTAINER_OF(cb, struct pinnacle_data, gpio_cb);
 
     LOG_DBG("HW DR asserted");
-    data->in_int = true;
+    set_int(data->dev, false); // mask the int until we've handled it (now level triggered)
     k_work_submit(&data->work);
 }
 
@@ -587,7 +589,6 @@ static int pinnacle_init(const struct device *dev) {
 
     LOG_DBG("Found device with FW ID: 0x%02x, Version: 0x%02x", fw_id[0], fw_id[1]);
 
-    data->in_int = false;
     k_msleep(10);
     ret = pinnacle_write(dev, PINNACLE_STATUS1, 0); // Clear CC
     if (ret < 0) {

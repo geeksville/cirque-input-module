@@ -75,7 +75,6 @@
 struct pinnacle_data {
     uint8_t btn_cache; // the prior button reading
     uint8_t last_btn; // the current button reading
-    bool in_int;
     int8_t last_z;
     int8_t num_z_idle;
     int16_t last_x, last_y; // last abs reading
